@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>P2P 即時白板＋聊天（無伺服器｜含橡皮擦）</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#0f141b; --ink:#dbe6f0; --muted:#9fb0c3; --accent:#66d9e8; --ok:#7bd389; --warn:#ffd166; --bad:#ef476f; --line:#1b2430; --shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Microsoft JhengHei", Helvetica, Arial, sans-serif; background: radial-gradient(1200px 600px at 10% -10%, #162130, transparent), linear-gradient(180deg, #0b0f14 0%, #0b0f14 100%); color:var(--ink);}
+  header{padding:14px 18px; display:flex; align-items:center; gap:12px; border-bottom:1px solid var(--line); background:rgba(15,20,27,.8); position:sticky; top:0; z-index:10; backdrop-filter: blur(8px)}
+  header h1{font-size:18px; margin:0; letter-spacing:.5px}
+  .tag{font-size:12px; color:#0b1220; background:linear-gradient(135deg,#66d9e8,#89f7a1); padding:4px 8px; border-radius:999px; font-weight:700}
+
+  .wrap{display:grid; grid-template-columns: 360px 1fr; gap:16px; height:calc(100% - 60px)}
+  @media (max-width:1024px){ .wrap{grid-template-columns:1fr; height:auto} }
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:14px; margin:16px; padding:14px; box-shadow:var(--shadow)}
+  .stack{display:flex; flex-direction:column; gap:12px}
+  .row{display:flex; gap:8px; align-items:center}
+  .row.wrap{flex-wrap:wrap}
+  .btn{appearance:none; border:1px solid #243244; background:#121924; color:var(--ink); padding:10px 12px; border-radius:12px; cursor:pointer; font-weight:700; transition:.15s transform, .15s opacity, .15s border-color}
+  .btn:hover{transform:translateY(-1px)}
+  .btn:active{transform:translateY(0)}
+  .btn.primary{background:linear-gradient(135deg, #1c2a3b, #0f1723); border-color:#263347}
+  .btn.ok{border-color: #294235;}
+  .btn.warn{border-color: #4a3d1b}
+  .btn.bad{border-color: #53303a}
+  .btn.small{padding:6px 8px; font-size:12px}
+  .btn.active{box-shadow:0 0 0 2px rgba(102,217,232,.35) inset; border-color:#2b3a4e}
+  .muted{color:var(--muted); font-size:12px}
+  .pill{padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); background:#0c121a}
+  textarea, input{width:100%; background:#0b1119; color:var(--ink); border:1px solid #1a2432; border-radius:12px; padding:10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+  textarea{min-height:90px; resize:vertical}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+  .canvasWrap{position:relative; min-height:340px; height:calc(100vh - 120px); border-radius:14px; overflow:hidden; background:radial-gradient(900px 400px at 60% -20%, rgba(102,217,232,.05), transparent), #0a0f15; border:1px solid var(--line)}
+  canvas{display:block; width:100%; height:100%}
+  .canvasWrap canvas{position:absolute; inset:0}
+  #bg{z-index:0}
+  #board{z-index:1}
+  .cursor{position:absolute; width:14px; height:14px; border-radius:50%; border:2px solid var(--accent); transform:translate(-50%, -50%); pointer-events:none; box-shadow:0 0 0 2px rgba(102,217,232,.25)}
+  .tools{position:absolute; top:10px; left:10px; display:flex; gap:10px; z-index:5}
+  .tools .tool{background:#0b1119; border:1px solid #1a2432; border-radius:10px; padding:8px; display:flex; align-items:center; gap:8px}
+  .tools input[type=range]{width:120px}
+  .statusbar{display:flex; gap:8px; flex-wrap:wrap}
+  .log{height:160px; overflow:auto; background:#0b1119; border:1px solid #1a2432; border-radius:12px; padding:8px; font-size:12px}
+  .chat{display:grid; grid-template-columns:1fr auto; gap:8px}
+  .bubble{padding:8px 10px; background:#0c121a; border:1px solid #1a2432; border-radius:10px; margin:2px 0}
+  .you{border-color:#294235; background:#0e1812}
+  .peer{border-color:#263347; background:#0f1520}
+  .hint{background:#0b1119; border:1px dashed #1a2432; padding:10px; border-radius:12px; font-size:13px}
+</style>
+</head>
+<body>
+  <header>
+    <span class="tag">P2P</span>
+    <h1>即時白板＋聊天（無伺服器 / WebRTC Copy‑Paste 配對）</h1>
+  </header>
+  <div class="wrap">
+    <aside class="panel stack" id="ctrls">
+      <div>
+        <div class="statusbar">
+          <span class="pill" id="connState">未連線</span>
+          <span class="pill" id="iceState">ICE: -</span>
+          <span class="pill" id="ping">Ping: -</span>
+          <span class="pill" id="mode">模式: 未定</span>
+        </div>
+        <p class="muted" style="margin-top:6px">步驟：A 當 <b>主機</b> 產生 Offer → B 貼上 Offer 產生 Answer → A 貼回 Answer 完成連線。</p>
+      </div>
+
+      <div class="stack">
+        <div class="row wrap">
+          <button class="btn primary" id="btnHost">A：主機建立 Offer</button>
+          <button class="btn" id="btnGuest">B：加入並產生 Answer</button>
+          <button class="btn small" id="btnReset">重置連線</button>
+          <button class="btn small" id="btnMic">開啟麥克風（可選）</button>
+        </div>
+
+        <div class="grid2">
+          <div>
+            <label class="muted">A 的 Offer（複製給 B）</label>
+            <textarea id="offerBox" placeholder="點 A：主機建立 Offer 產生..." readonly></textarea>
+            <div class="row">
+              <button class="btn small" id="copyOffer">複製 Offer</button>
+            </div>
+          </div>
+          <div>
+            <label class="muted">B 貼上 A 的 Offer</label>
+            <textarea id="remoteOffer" placeholder='貼上 {"type":"offer",...}'></textarea>
+            <div class="row">
+              <button class="btn ok" id="btnMakeAnswer">B：產生 Answer</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div>
+            <label class="muted">B 的 Answer（複製給 A）</label>
+            <textarea id="answerBox" placeholder="B 產生後會出現..." readonly></textarea>
+            <div class="row">
+              <button class="btn small" id="copyAnswer">複製 Answer</button>
+            </div>
+          </div>
+          <div>
+            <label class="muted">A 貼上 B 的 Answer</label>
+            <textarea id="remoteAnswer" placeholder='貼上 {"type":"answer",...}'></textarea>
+            <div class="row">
+              <button class="btn ok" id="btnAcceptAnswer">A：完成連線</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="hint">
+            <b>無伺服器說明：</b> 這個頁面使用 WebRTC + Google STUN（<code>stun:stun.l.google.com:19302</code>）建立 P2P 連線。因沒有訊號伺服器，所以用「<b>複製貼上</b>」交換 SDP 訊息完成配對。大多數網路可用（校園網或嚴格防火牆可能失敗）。
+          </div>
+          <div class="log" id="log"></div>
+        </div>
+
+        <div class="stack">
+          <div class="chat">
+            <input id="chatIn" placeholder="輸入訊息，Enter 送出" />
+            <button class="btn" id="sendChat">送出</button>
+          </div>
+          <div id="chatLog"></div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="panel" style="position:relative">
+      <div class="canvasWrap" id="canvasWrap">
+        <div class="tools">
+          <div class="tool">
+            <span class="muted">筆寬</span>
+            <input id="w" type="range" min="1" max="24" value="6" />
+            <span class="muted" id="wval">6</span>
+          </div>
+          <div class="tool">
+            <span class="muted">顏色</span>
+            <input id="c" type="color" value="#66d9e8" />
+          </div>
+          <div class="tool row">
+            <button class="btn small" id="toolPen" title="B">畫筆</button>
+            <button class="btn small" id="toolEraser" title="E">橡皮擦</button>
+            <span class="muted" id="toolName">畫筆</span>
+          </div>
+          <div class="tool row">
+            <button class="btn small" id="clear">清空畫布</button>
+            <button class="btn small" id="save">下載PNG</button>
+          </div>
+        </div>
+        <canvas id="bg"></canvas>
+        <canvas id="board"></canvas>
+        <div class="cursor" id="peerCur" hidden></div>
+        <audio id="remoteAudio" autoplay playsinline></audio>
+      </div>
+    </main>
+  </div>
+
+<script>
+(() => {
+  const qs = s => document.querySelector(s);
+  const qsa = s => Array.from(document.querySelectorAll(s));
+  const logEl = qs('#log');
+  const chatLog = qs('#chatLog');
+  const connState = qs('#connState');
+  const iceState = qs('#iceState');
+  const pingEl = qs('#ping');
+  const modeEl = qs('#mode');
+
+  const offerBox = qs('#offerBox');
+  const remoteOffer = qs('#remoteOffer');
+  const answerBox = qs('#answerBox');
+  const remoteAnswer = qs('#remoteAnswer');
+
+  const btnHost = qs('#btnHost');
+  const btnGuest = qs('#btnGuest');
+  const btnReset = qs('#btnReset');
+  const btnMic = qs('#btnMic');
+  const btnMakeAnswer = qs('#btnMakeAnswer');
+  const btnAcceptAnswer = qs('#btnAcceptAnswer');
+  const copyOffer = qs('#copyOffer');
+  const copyAnswer = qs('#copyAnswer');
+
+  const chatIn = qs('#chatIn');
+  const sendChat = qs('#sendChat');
+
+  const bg = qs('#bg');
+  const board = qs('#board');
+  const wrap = qs('#canvasWrap');
+  const peerCur = qs('#peerCur');
+  const wRange = qs('#w');
+  const wVal = qs('#wval');
+  const colorIn = qs('#c');
+  const btnClear = qs('#clear');
+  const btnSave = qs('#save');
+  const remoteAudio = qs('#remoteAudio');
+  const toolPen = qs('#toolPen');
+  const toolEraser = qs('#toolEraser');
+  const toolName = qs('#toolName');
+
+  let pc = null;
+  let dc = null;
+  let isHost = null;
+  let pingTimer = null;
+  let lastPing = null;
+
+  // drawing tool state
+  let isErasing = false; // false=pen, true=eraser
+
+  const cfg = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+  // Utils
+  function log(msg){
+    const t = new Date().toLocaleTimeString();
+    logEl.innerHTML += `<div class="muted">[${t}] ${escapeHtml(msg)}</div>`;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function escapeHtml(str){return str.replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[s]))}
+  function setConnState(text, color){ connState.textContent = text; connState.style.borderColor = color; }
+  function setIceState(text){ iceState.textContent = `ICE: ${text}`; }
+  function setMode(text){ modeEl.textContent = `模式: ${text}` }
+
+  function waitIceComplete(pc){
+    if (pc.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise(res => {
+      function check(){ if (pc.iceGatheringState === 'complete'){ pc.removeEventListener('icegatheringstatechange', check); res(); } }
+      pc.addEventListener('icegatheringstatechange', check);
+    });
+  }
+
+  function createPC(){
+    pc = new RTCPeerConnection(cfg);
+    pc.addEventListener('connectionstatechange', () => {
+      const st = pc.connectionState;
+      setConnState(st, st==='connected'? 'var(--ok)': st==='connecting' ? 'var(--warn)' : st==='failed' ? 'var(--bad)' : '#1a2432');
+      log(`Connection: ${st}`);
+      if (st==='connected') startPinging();
+      if (st==='disconnected' || st==='failed' || st==='closed') stopPinging();
+    });
+    pc.addEventListener('iceconnectionstatechange', () => setIceState(pc.iceConnectionState));
+    pc.addEventListener('icecandidateerror', e => log('ICE error: ' + (e.errorText || e.type)));
+    pc.addEventListener('datachannel', e => {
+      dc = e.channel; hookDC();
+    });
+    pc.addEventListener('track', e => {
+      // only audio is used
+      remoteAudio.srcObject = e.streams[0];
+    })
+    return pc;
+  }
+
+  function hookDC(){
+    if (!dc) return;
+    dc.addEventListener('open', () => {
+      log('DataChannel open');
+      addBubble('✔ 已連線，你可以開始聊天與畫圖', 'sys');
+    });
+    dc.addEventListener('message', e => {
+      try{
+        const msg = JSON.parse(e.data);
+        handleMsg(msg);
+      }catch(err){ log('收到非JSON訊息: ' + e.data) }
+    });
+    dc.addEventListener('close', () => log('DataChannel 關閉'));
+  }
+
+  function sendMsg(obj){
+    if (dc && dc.readyState === 'open'){
+      dc.send(JSON.stringify(obj));
+    }
+  }
+
+  // PING
+  function startPinging(){
+    stopPinging();
+    pingTimer = setInterval(() => {
+      lastPing = Date.now();
+      sendMsg({ t:'ping', ts:lastPing });
+    }, 2000);
+  }
+  function stopPinging(){
+    if (pingTimer) clearInterval(pingTimer);
+    pingTimer = null; lastPing = null; pingEl.textContent = 'Ping: -';
+  }
+
+  function handleMsg(m){
+    if (m.t==='chat'){
+      addBubble(m.text, 'peer');
+    } else if (m.t==='line'){
+      drawRemoteLine(m);
+    } else if (m.t==='cursor'){
+      showPeerCursor(m.x, m.y);
+    } else if (m.t==='ping'){
+      sendMsg({t:'pong', ts:m.ts});
+    } else if (m.t==='pong'){
+      if (typeof m.ts === 'number'){
+        const rtt = Math.max(0, Date.now() - m.ts);
+        pingEl.textContent = `Ping: ${rtt}ms`;
+      }
+    } else if (m.t==='clear'){ clearDrawing(); }
+  }
+
+  // Host flow
+  btnHost.addEventListener('click', async () => {
+    resetAll();
+    isHost = true; setMode('A 主機');
+    createPC();
+    dc = pc.createDataChannel('data');
+    hookDC();
+    const offer = await pc.createOffer({ offerToReceiveAudio: true });
+    await pc.setLocalDescription(offer);
+    await waitIceComplete(pc);
+    offerBox.value = JSON.stringify(pc.localDescription);
+    log('A 已建立 Offer，複製給 B');
+  });
+
+  // Guest flow: paste offer, generate answer
+  btnGuest.addEventListener('click', () => {
+    resetAll();
+    isHost = false; setMode('B 來賓');
+    createPC();
+  });
+
+  btnMakeAnswer.addEventListener('click', async () => {
+    try{
+      if (!pc) createPC();
+      const offer = JSON.parse(remoteOffer.value.trim());
+      if (offer.type !== 'offer') throw new Error('這不是 offer');
+      await pc.setRemoteDescription(offer);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await waitIceComplete(pc);
+      answerBox.value = JSON.stringify(pc.localDescription);
+      log('B 已產生 Answer，複製給 A');
+    }catch(err){ alert('無法產生 Answer：' + err.message); }
+  });
+
+  // Host pastes answer to finish
+  btnAcceptAnswer.addEventListener('click', async () => {
+    try{
+      const ans = JSON.parse(remoteAnswer.value.trim());
+      if (ans.type !== 'answer') throw new Error('這不是 answer');
+      await pc.setRemoteDescription(ans);
+      log('A 已設定遠端 Answer，等待連線...');
+    }catch(err){ alert('無法接受 Answer：' + err.message); }
+  });
+
+  // Copy helpers
+  copyOffer.addEventListener('click', () => { offerBox.select(); document.execCommand('copy'); log('Offer 已複製'); });
+  copyAnswer.addEventListener('click', () => { answerBox.select(); document.execCommand('copy'); log('Answer 已複製'); });
+
+  // Reset
+  btnReset.addEventListener('click', () => resetAll(true));
+
+  function resetAll(){
+    stopPinging();
+    if (dc){ try{ dc.close(); }catch{} }
+    if (pc){ try{ pc.close(); }catch{} }
+    dc=null; pc=null; isHost=null; setMode('未定');
+    setConnState('未連線', '#1a2432'); setIceState('-'); pingEl.textContent='Ping: -';
+    // keep textboxes but allow fresh flow
+  }
+
+  // Mic (optional)
+  btnMic.addEventListener('click', async () => {
+    try{
+      if (!pc){ createPC(); log('尚未配對也可先開麥克風，等連線會自動傳送'); }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+      stream.getTracks().forEach(t => pc.addTrack(t, stream));
+      btnMic.disabled = true; btnMic.textContent = '麥克風已啟用';
+      log('已加入麥克風音訊');
+    }catch(err){ alert('無法取得麥克風：' + err.message); }
+  });
+
+  // ======= Chat =======
+  function addBubble(text, who){
+    const div = document.createElement('div');
+    div.className = 'bubble ' + (who==='peer' ? 'peer' : who==='you' ? 'you' : '');
+    div.textContent = text;
+    chatLog.appendChild(div);
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+  sendChat.addEventListener('click', sendChatMsg);
+  chatIn.addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); sendChatMsg(); }});
+  function sendChatMsg(){
+    const t = chatIn.value.trim(); if (!t) return; chatIn.value='';
+    addBubble(t, 'you');
+    sendMsg({ t:'chat', text:t });
+  }
+
+  // ======= Whiteboard =======
+  const ctxBG = bg.getContext('2d');
+  const ctx = board.getContext('2d');
+  function resizeCanvas(){
+    const r = wrap.getBoundingClientRect();
+    const ratio = window.devicePixelRatio || 1;
+    // size both layers
+    [bg, board].forEach(cv => {
+      cv.width = Math.floor(r.width * ratio);
+      cv.height = Math.floor((r.height) * ratio);
+      cv.style.width = r.width + 'px';
+      cv.style.height = r.height + 'px';
+    });
+    ctxBG.setTransform(ratio,0,0,ratio,0,0);
+    ctx.setTransform(ratio,0,0,ratio,0,0);
+    redrawBg();
+  }
+  function redrawBg(){
+    // paint solid base then subtle grid on BACKGROUND layer only
+    const w = bg.clientWidth, h = bg.clientHeight;
+    ctxBG.clearRect(0,0,w,h);
+    ctxBG.save();
+    ctxBG.fillStyle = '#0a0f15';
+    ctxBG.fillRect(0,0,w,h);
+    ctxBG.strokeStyle = 'rgba(255,255,255,.05)';
+    ctxBG.lineWidth = 1;
+    const step = 24;
+    for(let x=0;x<w;x+=step){ ctxBG.beginPath(); ctxBG.moveTo(x,0); ctxBG.lineTo(x,h); ctxBG.stroke(); }
+    for(let y=0;y<h;y+=step){ ctxBG.beginPath(); ctxBG.moveTo(0,y); ctxBG.lineTo(w,y); ctxBG.stroke(); }
+    ctxBG.restore();
+  }
+  function clearDrawing(){
+    const w = board.clientWidth, h = board.clientHeight;
+    ctx.clearRect(0,0,w,h);
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  let drawing = false;
+  let last = null;
+  function getPos(e){
+    const rect = board.getBoundingClientRect();
+    const x = (e.touches? e.touches[0].clientX : e.clientX) - rect.left;
+    const y = (e.touches? e.touches[0].clientY : e.clientY) - rect.top;
+    return {x,y};
+  }
+
+  function drawSeg(a,b, color, width, erase){
+    ctx.save();
+    if (erase){
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.strokeStyle = 'rgba(0,0,0,1)';
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = color;
+    }
+    ctx.lineWidth = width; ctx.lineCap='round'; ctx.lineJoin='round';
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.restore();
+  }
+
+  function sendCursor(x,y){ sendMsg({ t:'cursor', x, y }); }
+  let cursorTimer=null;
+
+  function onDown(e){ drawing = true; last = getPos(e); e.preventDefault(); }
+  function onMove(e){
+    const p = getPos(e);
+    if (drawing && last){
+      const color = colorIn.value, width = +wRange.value;
+      drawSeg(last, p, color, width, isErasing);
+      sendMsg({ t:'line', ax:last.x, ay:last.y, bx:p.x, by:p.y, color, width, erase: isErasing });
+      last = p;
+    }
+    // throttle cursor
+    if (!cursorTimer){
+      cursorTimer = requestAnimationFrame(() => {
+        sendCursor(p.x, p.y); cursorTimer=null;
+      });
+    }
+    e.preventDefault();
+  }
+  function onUp(e){ drawing=false; last=null; e.preventDefault(); }
+
+  board.addEventListener('mousedown', onDown);
+  board.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+  board.addEventListener('touchstart', onDown, {passive:false});
+  board.addEventListener('touchmove', onMove, {passive:false});
+  board.addEventListener('touchend', onUp, {passive:false});
+
+  function drawRemoteLine(m){ drawSeg({x:m.ax,y:m.ay}, {x:m.bx,y:m.by}, m.color, m.width, !!m.erase); }
+  function showPeerCursor(x,y){
+    peerCur.hidden = false; peerCur.style.left = x+ 'px'; peerCur.style.top = y+'px';
+    clearTimeout(showPeerCursor._t);
+    showPeerCursor._t = setTimeout(() => peerCur.hidden=true, 800);
+  }
+
+  // controls
+  wRange.addEventListener('input', () => wVal.textContent = wRange.value);
+  btnClear.addEventListener('click', () => { clearDrawing(); sendMsg({t:'clear'}); });
+  btnSave.addEventListener('click', () => {
+    // export: composite background + drawing
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = board.width; exportCanvas.height = board.height;
+    const ex = exportCanvas.getContext('2d');
+    ex.drawImage(bg, 0, 0);
+    ex.drawImage(board, 0, 0);
+    const url = exportCanvas.toDataURL('image/png');
+    const a = document.createElement('a'); a.href = url; a.download = 'whiteboard.png'; a.click();
+  });
+
+  // ==== Tool toggle (Pen/Eraser) ====
+  function setTool(name){
+    isErasing = (name === 'eraser');
+    toolPen.classList.toggle('active', !isErasing);
+    toolEraser.classList.toggle('active', isErasing);
+    toolName.textContent = isErasing ? '' : '';
+  }
+  toolPen.addEventListener('click', () => setTool('pen'));
+  toolEraser.addEventListener('click', () => setTool('eraser'));
+  window.addEventListener('keydown', (e) => {
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    if (e.key==='e' || e.key==='E') setTool('eraser');
+    if (e.key==='b' || e.key==='B') setTool('pen');
+  });
+  setTool('pen');
+})();
+</script>
+</body>
+</html>
