@@ -17,6 +17,7 @@
 ```bash
 npm i -g serve
 serve .
+
 ## Demo
 - GitHub Pages：https://cccat970122.github.io/p2p-whiteboard/
 - 影片 / 動圖示意：
