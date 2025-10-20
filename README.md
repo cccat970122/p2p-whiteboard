@@ -16,7 +16,7 @@
 ### 方式 B：本機啟動（Node）
 ```bash
 npm i -g serve
-serve .
+serve .```
 
 ## Demo
 - GitHub Pages：https://cccat970122.github.io/p2p-whiteboard/
